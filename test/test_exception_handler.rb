@@ -2,8 +2,6 @@ require 'helper'
 require 'sidekiq'
 require 'sidekiq/exception_handler'
 require 'sidekiq/configure_notifications/exception_handler'
-require 'stringio'
-require 'logger'
 
 ExceptionHandlerTestException = Class.new(StandardError)
 TEST_EXCEPTION = ExceptionHandlerTestException.new("Something didn't work!")
@@ -20,55 +18,53 @@ end
 
 class TestExceptionHandler < Minitest::Test
   describe "with log_exceptions_after and skip_log_exceptions options" do
-    after do
-      Object.send(:remove_const, "Airbrake") # HACK should probably inject Airbrake etc into this class in the future
-    end
+
+    let(:error_handler) { Minitest::Mock.new }
+
+    before { Sidekiq.error_handlers << error_handler }
+    after  { Sidekiq.error_handlers.delete error_handler }
 
     describe "does not log" do
-      before do
-        class ::Airbrake
-          def self.notify_or_ignore(*args)
-            raise "it should not be called"
-          end
+      it "does not log when number of retries is less than log_exceptions_after" do
+        error_handler.expect :call, nil, [TEST_EXCEPTION, 'log_exceptions_after' => 4, 'retry_count' => 3]
+        Component.new.invoke_exception('log_exceptions_after' => 4, 'retry_count' => 3)
+        assert_raises(MockExpectationError, "It logged!") do
+          error_handler.verify
         end
       end
 
-      it "does not log when number of retries is less than log_exceptions_after" do
-        Component.new.invoke_exception('log_exceptions_after' => 4, 'retry_count' => 3)
-      end
-
       it "does not log when number of retries is bigger than log_exceptions_after and exception is not in skip_log_exceptions" do
+        error_handler.expect :call, nil, [TEST_EXCEPTION, 'log_exceptions_after' => 2, 'retry_count' => 3, 'skip_log_exceptions' => [::Exception]]
         Component.new.invoke_exception('log_exceptions_after' => 2, 'retry_count' => 3, 'skip_log_exceptions' => [::Exception])
+        assert_raises(MockExpectationError, "It logged!") do
+          error_handler.verify
+        end
       end
     end
 
     describe "logs" do
-      before do
-        ::Airbrake = Minitest::Mock.new
-      end
-
       it "logs when number of retries is less than log_exceptions_after and exception is not in skip_log_exceptions 3" do
-        ::Airbrake.expect(:notify_or_ignore,nil,[TEST_EXCEPTION,:parameters => { 'log_exceptions_after' => 2, 'retry_count' => 3, 'skip_log_exceptions' => [ExceptionHandlerTestException] }])
+        error_handler.expect :call, nil, [TEST_EXCEPTION, { 'log_exceptions_after' => 2, 'retry_count' => 3, 'skip_log_exceptions' => [ExceptionHandlerTestException] }]
         Component.new.invoke_exception('log_exceptions_after' => 2, 'retry_count' => 3, 'skip_log_exceptions' => [ExceptionHandlerTestException])
-        ::Airbrake.verify
+        error_handler.verify
       end
 
       it "logs when number of retries is less than log_exceptions_after and skip_log_exceptions is empty" do
-        ::Airbrake.expect(:notify_or_ignore,nil,[TEST_EXCEPTION,:parameters => { 'log_exceptions_after' => 2, 'retry_count' => 3, 'skip_log_exceptions' => [] }])
+        error_handler.expect :call, nil, [TEST_EXCEPTION, { 'log_exceptions_after' => 2, 'retry_count' => 3, 'skip_log_exceptions' => [] }]
         Component.new.invoke_exception('log_exceptions_after' => 2, 'retry_count' => 3, 'skip_log_exceptions' => [])
-        ::Airbrake.verify
+        error_handler.verify
       end
 
       it "logs when number of retries is less than log_exceptions_after and skip_log_exceptions is not given" do
-        ::Airbrake.expect(:notify_or_ignore,nil,[TEST_EXCEPTION,:parameters => { 'log_exceptions_after' => 2, 'retry_count' => 3 }])
+        error_handler.expect :call, nil, [TEST_EXCEPTION, { 'log_exceptions_after' => 2, 'retry_count' => 3 }]
         Component.new.invoke_exception('log_exceptions_after' => 2, 'retry_count' => 3)
-        ::Airbrake.verify
+        error_handler.verify
       end
 
       it "logs when log_exceptions_after is not given" do
-        ::Airbrake.expect(:notify_or_ignore,nil,[TEST_EXCEPTION,:parameters => {}])
+        error_handler.expect :call, nil, [TEST_EXCEPTION, {}]
         Component.new.invoke_exception({})
-        ::Airbrake.verify
+        error_handler.verify
       end
     end
   end
